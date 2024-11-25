@@ -204,6 +204,9 @@ class OBJECT_OT_AddPromptBase(Operator):
         mat.use_nodes = False
         mat.diffuse_color = color + (1,)  # Add alpha value
         ico.data.materials.append(mat)
+        ico.hide_render = True
+        ico.hide_viewport = False
+        
         
         # Get or create the material collection
         material = context.scene.material_ids[self.material_index]
@@ -427,10 +430,79 @@ class OBJECT_OT_RenderMask(Operator):
     
     def execute(self, context):
         try:
-            # Base directory (user selected)
-            base_dir = os.path.abspath(self.filepath)
-            if not os.path.exists(base_dir):
-                self.report({'ERROR'}, f"Base directory does not exist: {base_dir}")
+        # Check for UV map and material setup
+            obj = bpy.data.objects.get(context.scene.projection_3d_object)
+            if not obj:
+                self.report({'ERROR'}, "No target object selected")
+                return {'CANCELLED'}
+
+            # Check for UV map
+            if not obj.data.uv_layers:
+                self.report({'ERROR'}, "Object needs a UV map for projection")
+                return {'CANCELLED'}
+
+            # Check for material
+            if not obj.material_slots:
+                # Create a new material if none exists
+                mat = bpy.data.materials.new(name=f"{obj.name}_ProjectionMaterial")
+                mat.use_nodes = True
+                obj.data.materials.append(mat)
+
+            # Ensure material has an image texture node
+            mat = obj.active_material
+            if not mat:
+                self.report({'ERROR'}, "No active material")
+                return {'CANCELLED'}
+
+            nodes = mat.node_tree.nodes
+            image_tex = None
+            for node in nodes:
+                if node.type == 'TEX_IMAGE':
+                    image_tex = node
+                    break
+
+            if not image_tex:
+                image_tex = nodes.new('ShaderNodeTexImage')
+                # Connect to principled BSDF if it exists
+                principled = next((n for n in nodes if n.type == 'BSDF_PRINCIPLED'), None)
+                if principled:
+                    mat.node_tree.links.new(image_tex.outputs[0], principled.inputs['Base Color'])
+
+            # Store initial visibility states
+            visibility_states = {}
+            
+            # Hide all iconospheres before rendering
+            for material in context.scene.material_ids:
+                # Store and hide positive prompts
+                for point in material.prompts.positive_prompts:
+                    if point.name in bpy.data.objects:
+                        obj = bpy.data.objects[point.name]
+                        visibility_states[obj.name] = {
+                            'hide_render': obj.hide_render,
+                            'hide_viewport': obj.hide_viewport
+                        }
+                        obj.hide_render = True
+                
+                # Store and hide negative prompts
+                for point in material.prompts.negative_prompts:
+                    if point.name in bpy.data.objects:
+                        obj = bpy.data.objects[point.name]
+                        visibility_states[obj.name] = {
+                            'hide_render': obj.hide_render,
+                            'hide_viewport': obj.hide_viewport
+                        }
+                        obj.hide_render = True
+
+            # Continue with the original execute functionality
+            try:
+                # Base directory (user selected)
+                base_dir = os.path.abspath(self.filepath)
+                if not os.path.exists(base_dir):
+                    self.report({'ERROR'}, f"Base directory does not exist: {base_dir}")
+                    return {'CANCELLED'}
+            
+            except Exception as e:
+                self.report({'ERROR'}, f"Error: {str(e)}")
                 return {'CANCELLED'}
 
             # Create main subdirectories at the root level
@@ -534,10 +606,20 @@ class OBJECT_OT_RenderMask(Operator):
 
             self.report({'INFO'}, "Completed processing all materials")
             return {'FINISHED'}
-
+        
         except Exception as e:
             self.report({'ERROR'}, f"Error: {str(e)}")
             return {'CANCELLED'}
+        
+        finally:
+            # Restore visibility states after rendering
+            for obj_name, states in visibility_states.items():
+                if obj_name in bpy.data.objects:
+                    obj = bpy.data.objects[obj_name]
+                    obj.hide_render = states['hide_render']
+                    obj.hide_viewport = states['hide_viewport']
+        
+        
 
     def process_with_sam_pipeline(self, sam_model_dir, render_path, input_points, input_labels, mask_path):
         try:
@@ -683,16 +765,82 @@ class OBJECT_OT_RenderMask(Operator):
                 # Save final mask
                 self.report({'INFO'}, f"Saving mask to: {mask_path}")
                 mask_saved = cv2.imwrite(mask_path, (final_mask * 255).astype(np.uint8))
-                
-                if not mask_saved:
+
+                if mask_saved:
+                    # Switch to texture paint mode
+                    if bpy.context.mode != 'TEXTURE_PAINT':
+                        bpy.ops.object.mode_set(mode='TEXTURE_PAINT')
+
+                    # Get the target object
+                    obj = bpy.data.objects.get(bpy.context.scene.projection_3d_object)
+                    if not obj:
+                        self.report({'ERROR'}, "Target object not found")
+                        return False
+
+                    # Create or get material for projection
+                    mat_name = f"Projection_Material_{os.path.basename(mask_path)}"
+                    if mat_name in bpy.data.materials:
+                        mat = bpy.data.materials[mat_name]
+                    else:
+                        mat = bpy.data.materials.new(name=mat_name)
+                        mat.use_nodes = True
+                        
+                    # Ensure the material is assigned to the object
+                    if mat.name not in obj.data.materials:
+                        obj.data.materials.append(mat)
+
+                    # Set up material nodes
+                    nodes = mat.node_tree.nodes
+                    links = mat.node_tree.links
+                    nodes.clear()
+
+                    # Create and setup image texture node
+                    tex_image = nodes.new('ShaderNodeTexImage')
+                    output = nodes.new('ShaderNodeOutputMaterial')
+                    bsdf = nodes.new('ShaderNodeBsdfPrincipled')
+
+                    # Load mask image
+                    if os.path.basename(mask_path) in bpy.data.images:
+                        mask_img = bpy.data.images[os.path.basename(mask_path)]
+                        mask_img.reload()
+                    else:
+                        mask_img = bpy.data.images.load(mask_path)
+                        mask_img.name = os.path.basename(mask_path)
+
+                    # Assign image to texture node
+                    tex_image.image = mask_img
+
+                    # Link nodes
+                    links.new(tex_image.outputs[0], bsdf.inputs[0])
+                    links.new(bsdf.outputs[0], output.inputs[0])
+
+                    # Set up paint settings
+                    paint_settings = bpy.context.scene.tool_settings.image_paint
+                    paint_settings.mode = 'IMAGE'
+                    paint_settings.canvas = mask_img
+                    paint_settings.use_occlude = True
+                    paint_settings.use_backface_culling = True
+                    paint_settings.use_normal_falloff = True
+                    paint_settings.seam_bleed = 2
+
+                    # Project the mask
+                    bpy.ops.paint.project_image(image=mask_img.name)
+
+                    # Update viewport
+                    for area in bpy.context.screen.areas:
+                        if area.type == 'VIEW_3D':
+                            area.tag_redraw()
+
+                    self.report({'INFO'}, f"Successfully projected mask: {os.path.basename(mask_path)}")
+                    return True
+                else:
                     self.report({'ERROR'}, f"Failed to save mask to {mask_path}")
                     return False
 
-                self.report({'INFO'}, f"Successfully saved mask to {mask_path}")
-                return True
-
             except Exception as e:
                 self.report({'ERROR'}, f"SAM processing error: {str(e)}")
+                import traceback
+                traceback.print_exc()  # This will print the full error traceback
                 return False
 
             finally:
@@ -701,6 +849,51 @@ class OBJECT_OT_RenderMask(Operator):
                     torch.cuda.empty_cache()
         except Exception as e:
             self.report({'ERROR'}, f"Error: {str(e)}")
+            return False
+    
+    def project_mask_onto_model(self, context, mask_path):
+        try:
+            # Get the target object
+            obj = bpy.data.objects.get(context.scene.projection_3d_object)
+            if not obj:
+                self.report({'ERROR'}, "Target object not found")
+                return False
+
+            # Ensure object is in texture paint mode
+            if context.mode != 'TEXTURE_PAINT':
+                bpy.ops.object.mode_set(mode='TEXTURE_PAINT')
+
+            # Load the mask image
+            mask_name = os.path.basename(mask_path)
+            if mask_name in bpy.data.images:
+                mask_img = bpy.data.images[mask_name]
+                mask_img.reload()
+            else:
+                mask_img = bpy.data.images.load(mask_path)
+
+            # Set the mask as the active image
+            obj.active_material.paint_active_slot = 0
+            obj.active_material.paint_clone_slot = 0
+            context.scene.tool_settings.image_paint.canvas = mask_img
+
+            # Configure projection settings
+            paint_settings = context.scene.tool_settings.image_paint
+            paint_settings.use_occlude = True
+            paint_settings.use_backface_culling = True
+            paint_settings.use_normal_falloff = True
+            paint_settings.seam_bleed = 2
+
+            # Project the image
+            bpy.ops.paint.project_image(image=mask_img.name)
+
+            # Update the viewport
+            context.area.tag_redraw()
+
+            self.report({'INFO'}, f"Successfully projected mask: {mask_name}")
+            return True
+
+        except Exception as e:
+            self.report({'ERROR'}, f"Failed to project mask: {str(e)}")
             return False
 
     def get_positive_points(self, material):
