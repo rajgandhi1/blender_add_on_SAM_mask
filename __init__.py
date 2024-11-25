@@ -61,6 +61,47 @@ def update_material_name(self, context):
     # Store the current name for future reference
     self['previous_name'] = self.name
 
+def update_use_texture(self, context):
+    """Callback for texture toggle"""
+    obj = bpy.data.objects.get(context.scene.projection_3d_object)
+    if not obj:
+        return
+        
+    # Create or get material
+    mat_name = f"{obj.name}_material"
+    mat = bpy.data.materials.get(mat_name)
+    if not mat:
+        mat = bpy.data.materials.new(name=mat_name)
+    
+    mat.use_nodes = True
+    nodes = mat.node_tree.nodes
+    links = mat.node_tree.links
+    
+    # Clear existing nodes
+    nodes.clear()
+    
+    # Create basic nodes
+    output = nodes.new('ShaderNodeOutputMaterial')
+    bsdf = nodes.new('ShaderNodeBsdfPrincipled')
+    
+    if self.use_texture and context.scene.projection_texture_map:
+        # Load and apply texture
+        tex_image = nodes.new('ShaderNodeTexImage')
+        try:
+            img = bpy.data.images.load(context.scene.projection_texture_map)
+            tex_image.image = img
+            links.new(tex_image.outputs['Color'], bsdf.inputs['Base Color'])
+        except Exception as e:
+            print(f"Failed to load texture: {str(e)}")
+    
+    links.new(bsdf.outputs['BSDF'], output.inputs['Surface'])
+    
+    # Assign material to object
+    if obj.data.materials:
+        obj.data.materials[0] = mat
+    else:
+        obj.data.materials.append(mat)
+
 class MaterialIDProperties(PropertyGroup):
     name: StringProperty(
         default="Material",
@@ -69,7 +110,8 @@ class MaterialIDProperties(PropertyGroup):
     use_texture: BoolProperty(
         name="Use Texture",
         description="Use texture instead of solid color",
-        default=False
+        default=False,
+        update=update_use_texture
     )
     color: FloatVectorProperty(
         subtype='COLOR',
@@ -129,6 +171,12 @@ class ProjectionToolPanel(bpy.types.Panel):
         row = box.row()
         row.prop(scene, "projection_3d_object", text="3D Object")
         row.operator("wm.select_3d_object", text="", icon='FILE_FOLDER')
+
+        # Modified texture map selection to use a single row with split
+        row = box.row()
+        split = row.split(factor=1)  # Adjust factor to control button size
+        split.prop(scene, "projection_texture_map", text="Texture Map")
+        # split.operator("wm.select_texture_map", text="", icon='FILE_FOLDER')
         
         box.prop(scene, "projection_material", text="Material")
         
@@ -168,9 +216,7 @@ class ProjectionToolPanel(bpy.types.Panel):
             row = box.row()
             row.prop(material, "use_texture", text="Use Texture")
             
-            if material.use_texture:
-                box.prop(material, "texture_path", text="Texture")
-            else:
+            if not material.use_texture:
                 box.prop(material, "color", text="Color")
             
             # Render Mask button moved above Add Camera
@@ -245,6 +291,11 @@ def register():
             ("MATERIAL", "Material", "")
         ]
     )
+    bpy.types.Scene.projection_texture_map = StringProperty(
+        name="Texture Map",
+        description="Texture map for the 3D object",
+        subtype='FILE_PATH'
+    )
     bpy.types.Scene.projection_resolution_x = IntProperty(name="X", default=512)
     bpy.types.Scene.projection_resolution_y = IntProperty(name="Y", default=512)
 
@@ -264,6 +315,7 @@ def unregister():
     
     del bpy.types.Scene.projection_3d_object
     del bpy.types.Scene.projection_material
+    del bpy.types.Scene.projection_texture_map
     del bpy.types.Scene.projection_resolution_x
     del bpy.types.Scene.projection_resolution_y
     del bpy.types.Scene.projection_server_url

@@ -922,6 +922,77 @@ class OBJECT_OT_RenderMask(Operator):
             mask.putpixel((int(point[0]), int(point[1])), 0)  # Black for negative points
 
         return mask
+    
+class OBJECT_OT_SelectTextureMap(Operator):
+    bl_idname = "wm.select_texture_map"
+    bl_label = "Select Texture Map"
+    
+    filepath: StringProperty(
+        subtype='FILE_PATH',
+    )
+    
+    filter_glob: StringProperty(
+        default='*.jpg;*.jpeg;*.png;*.tif;*.tiff;*.bmp',
+        options={'HIDDEN'}
+    )
+    
+    def execute(self, context):
+        context.scene.projection_texture_map = self.filepath
+        # Apply texture to object if one is selected
+        obj = bpy.data.objects.get(context.scene.projection_3d_object)
+        if obj:
+            apply_texture_to_object(context)
+        return {'FINISHED'}
+    
+    def invoke(self, context, event):
+        context.window_manager.fileselect_add(self)
+        return {'RUNNING_MODAL'}
+
+def apply_texture_to_object(context):
+    obj = bpy.data.objects.get(context.scene.projection_3d_object)
+    if not obj or not context.scene.projection_texture_map:
+        return
+        
+    # Create or get material
+    mat_name = f"{obj.name}_base_material"
+    mat = bpy.data.materials.get(mat_name)
+    if not mat:
+        mat = bpy.data.materials.new(name=mat_name)
+    
+    mat.use_nodes = True
+    nodes = mat.node_tree.nodes
+    links = mat.node_tree.links
+    
+    # Clear existing nodes
+    nodes.clear()
+    
+    # Create basic nodes
+    output = nodes.new('ShaderNodeOutputMaterial')
+    bsdf = nodes.new('ShaderNodeBsdfPrincipled')
+    tex_image = nodes.new('ShaderNodeTexImage')
+    
+    # Position nodes
+    output.location = (300, 0)
+    bsdf.location = (0, 0)
+    tex_image.location = (-300, 0)
+    
+    # Load and assign texture
+    try:
+        img = bpy.data.images.load(context.scene.projection_texture_map)
+        tex_image.image = img
+    except Exception as e:
+        print(f"Failed to load texture: {str(e)}")
+        return
+    
+    # Create links
+    links.new(tex_image.outputs['Color'], bsdf.inputs['Base Color'])
+    links.new(bsdf.outputs['BSDF'], output.inputs['Surface'])
+    
+    # Assign material to object
+    if obj.data.materials:
+        obj.data.materials[0] = mat
+    else:
+        obj.data.materials.append(mat)
 
 # Registration
 classes = (
@@ -933,6 +1004,7 @@ classes = (
     OBJECT_OT_AddPositivePoint,
     OBJECT_OT_AddNegativePoint,
     OBJECT_OT_RenderMask,
+    OBJECT_OT_SelectTextureMap,
 )
 
 def register():
