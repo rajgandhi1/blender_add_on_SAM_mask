@@ -10,6 +10,33 @@ from bpy_extras import view3d_utils
 import os
 from . import mask_operators
 from bpy_extras.object_utils import world_to_camera_view
+from bpy.app.handlers import persistent
+
+@persistent
+def check_deleted_points(scene):
+    """Handler to check for deleted points and update prompt lists"""
+    # Skip if no material IDs exist
+    if not hasattr(scene, 'material_ids'):
+        return
+        
+    for material in scene.material_ids:
+        # Check positive prompts
+        i = 0
+        while i < len(material.prompts.positive_prompts):
+            prompt = material.prompts.positive_prompts[i]
+            if prompt.name not in bpy.data.objects:
+                material.prompts.positive_prompts.remove(i)
+            else:
+                i += 1
+                
+        # Check negative prompts
+        i = 0
+        while i < len(material.prompts.negative_prompts):
+            prompt = material.prompts.negative_prompts[i]
+            if prompt.name not in bpy.data.objects:
+                material.prompts.negative_prompts.remove(i)
+            else:
+                i += 1
 
 class OBJECT_OT_Select3DObject(Operator):
     bl_idname = "wm.select_3d_object"
@@ -68,9 +95,24 @@ class OBJECT_OT_DeleteMaterialID(Operator):
             material_coll_name = f"MaterialID_{material.name}_Collection"
             if material_coll_name in bpy.data.collections:
                 collection = bpy.data.collections[material_coll_name]
-                # Remove all objects in the collection
+                
+                # Before removing objects, clean up the prompt lists
                 for obj in collection.objects:
+                    # Check if object is a point (icosphere)
+                    if obj.name.startswith('+') or obj.name.startswith('-'):
+                        # Remove from positive prompts
+                        for i, prompt in enumerate(material.prompts.positive_prompts):
+                            if prompt.name == obj.name:
+                                material.prompts.positive_prompts.remove(i)
+                                break
+                        # Remove from negative prompts
+                        for i, prompt in enumerate(material.prompts.negative_prompts):
+                            if prompt.name == obj.name:
+                                material.prompts.negative_prompts.remove(i)
+                                break
+                    
                     bpy.data.objects.remove(obj, do_unlink=True)
+                
                 # Remove the collection itself
                 bpy.data.collections.remove(collection)
             
@@ -82,6 +124,36 @@ class OBJECT_OT_DeleteMaterialID(Operator):
             context.scene.material_id_index = min(max(0, idx), len(context.scene.material_ids) - 1)
         return {'FINISHED'}
 
+class OBJECT_OT_DeletePoint(Operator):
+    bl_idname = "wm.delete_point"
+    bl_label = "Delete Point"
+    
+    point_name: StringProperty()
+    
+    def execute(self, context):
+        # Find the point object
+        point_obj = bpy.data.objects.get(self.point_name)
+        if not point_obj:
+            return {'CANCELLED'}
+            
+        # Find the material ID that owns this point
+        for material in context.scene.material_ids:
+            # Check positive prompts
+            for i, prompt in enumerate(material.prompts.positive_prompts):
+                if prompt.name == self.point_name:
+                    material.prompts.positive_prompts.remove(i)
+                    break
+            # Check negative prompts
+            for i, prompt in enumerate(material.prompts.negative_prompts):
+                if prompt.name == self.point_name:
+                    material.prompts.negative_prompts.remove(i)
+                    break
+        
+        # Delete the object
+        bpy.data.objects.remove(point_obj, do_unlink=True)
+        
+        return {'FINISHED'}
+    
 class OBJECT_OT_AddCamera(Operator):
     bl_idname = "wm.add_camera"
     bl_label = "Add Camera"
@@ -851,7 +923,7 @@ class OBJECT_OT_RenderMask(Operator):
             self.report({'ERROR'}, f"Error: {str(e)}")
             return False
     
-    def project_mask_onto_model(self, context, mask_path):
+    def project_mask_onto_model(self, context, mask_path, material_id):
         try:
             # Get the target object
             obj = bpy.data.objects.get(context.scene.projection_3d_object)
@@ -859,41 +931,52 @@ class OBJECT_OT_RenderMask(Operator):
                 self.report({'ERROR'}, "Target object not found")
                 return False
 
-            # Ensure object is in texture paint mode
-            if context.mode != 'TEXTURE_PAINT':
-                bpy.ops.object.mode_set(mode='TEXTURE_PAINT')
+            # Create a new material for the mask
+            mask_name = os.path.basename(mask_path)
+            mat_name = f"{material_id.name}_mask_{len(material_id.masks) + 1}"
+            mask_mat = bpy.data.materials.new(name=mat_name)
+            mask_mat.use_nodes = True
+            nodes = mask_mat.node_tree.nodes
+            links = mask_mat.node_tree.links
+            
+            # Clear default nodes
+            nodes.clear()
+            
+            # Create nodes for mask material
+            output = nodes.new('ShaderNodeOutputMaterial')
+            bsdf = nodes.new('ShaderNodeBsdfPrincipled')
+            tex_image = nodes.new('ShaderNodeTexImage')
+            
+            # Position nodes
+            output.location = (300, 0)
+            bsdf.location = (0, 0)
+            tex_image.location = (-300, 0)
 
             # Load the mask image
-            mask_name = os.path.basename(mask_path)
             if mask_name in bpy.data.images:
                 mask_img = bpy.data.images[mask_name]
                 mask_img.reload()
             else:
                 mask_img = bpy.data.images.load(mask_path)
+            
+            # Assign image to texture node
+            tex_image.image = mask_img
+            
+            # Create links
+            links.new(tex_image.outputs['Color'], bsdf.inputs['Base Color'])
+            links.new(bsdf.outputs['BSDF'], output.inputs['Surface'])
 
-            # Set the mask as the active image
-            obj.active_material.paint_active_slot = 0
-            obj.active_material.paint_clone_slot = 0
-            context.scene.tool_settings.image_paint.canvas = mask_img
+            # Add the material to the material_id's masks collection
+            mask_item = material_id.masks.add()
+            mask_item.name = mat_name
+            mask_item.material = mask_mat
+            mask_item.image = mask_img
 
-            # Configure projection settings
-            paint_settings = context.scene.tool_settings.image_paint
-            paint_settings.use_occlude = True
-            paint_settings.use_backface_culling = True
-            paint_settings.use_normal_falloff = True
-            paint_settings.seam_bleed = 2
-
-            # Project the image
-            bpy.ops.paint.project_image(image=mask_img.name)
-
-            # Update the viewport
-            context.area.tag_redraw()
-
-            self.report({'INFO'}, f"Successfully projected mask: {mask_name}")
+            self.report({'INFO'}, f"Successfully created mask material: {mat_name}")
             return True
 
         except Exception as e:
-            self.report({'ERROR'}, f"Failed to project mask: {str(e)}")
+            self.report({'ERROR'}, f"Failed to create mask material: {str(e)}")
             return False
 
     def get_positive_points(self, material):
@@ -1005,15 +1088,21 @@ classes = (
     OBJECT_OT_AddNegativePoint,
     OBJECT_OT_RenderMask,
     OBJECT_OT_SelectTextureMap,
+    OBJECT_OT_DeletePoint,
 )
 
 def register():
     for cls in classes:
         bpy.utils.register_class(cls)
+    
+    if check_deleted_points not in bpy.app.handlers.depsgraph_update_post:
+        bpy.app.handlers.depsgraph_update_post.append(check_deleted_points)
 
 def unregister():
     for cls in reversed(classes):
         bpy.utils.unregister_class(cls)
+    if check_deleted_points in bpy.app.handlers.depsgraph_update_post:
+        bpy.app.handlers.depsgraph_update_post.remove(check_deleted_points)
 
 if __name__ == "__main__":
     register()

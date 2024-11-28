@@ -102,6 +102,15 @@ def update_use_texture(self, context):
     else:
         obj.data.materials.append(mat)
 
+class MaskProperties(PropertyGroup):
+    name: StringProperty(default="Mask")
+    material: PointerProperty(type=bpy.types.Material)
+    image: PointerProperty(type=bpy.types.Image)
+
+class MaterialIDMasks(PropertyGroup):
+    masks: CollectionProperty(type=MaskProperties)
+    mask_index: IntProperty()
+
 class MaterialIDProperties(PropertyGroup):
     name: StringProperty(
         default="Material",
@@ -128,6 +137,13 @@ class MaterialIDProperties(PropertyGroup):
     cameras: PointerProperty(type=MaterialIDCameraList)
     prompts: PointerProperty(type=MaterialIDPrompts)
 
+    masks: PointerProperty(type=MaterialIDMasks)
+
+class MASK_UL_List(UIList):
+    def draw_item(self, context, layout, data, item, icon, active_data, active_propname):
+        if self.layout_type in {'DEFAULT', 'COMPACT'}:
+            layout.prop(item, "name", text="", emboss=False)
+
 # List Templates
 class CAMERA_UL_List(UIList):
     def draw_item(self, context, layout, data, item, icon, active_data, active_propname):
@@ -148,9 +164,14 @@ class MATERIAL_UL_List(UIList):
 class PROMPT_UL_List(UIList):
     def draw_item(self, context, layout, data, item, icon, active_data, active_propname):
         if self.layout_type in {'DEFAULT', 'COMPACT'}:
-            layout.prop(item, "name", text="", emboss=False)
+            row = layout.row()
+            row.prop(item, "name", text="", emboss=False)
             if item.face_index >= 0:
-                layout.label(text=f"Face: {item.face_index}")
+                row.label(text=f"Face: {item.face_index}")
+            # Add delete button with proper error checking
+            delete_op = row.operator("wm.delete_point", text="", icon='X')
+            if delete_op:  # Check if operator exists
+                delete_op.point_name = item.name
 
 # Main Panel
 class ProjectionToolPanel(bpy.types.Panel):
@@ -216,8 +237,7 @@ class ProjectionToolPanel(bpy.types.Panel):
             row = box.row()
             row.prop(material, "use_texture", text="Use Texture")
             
-            if not material.use_texture:
-                box.prop(material, "color", text="Color")
+            box.prop(material, "color", text="Color")
             
             # Render Mask button moved above Add Camera
             box.operator("wm.render_mask", text="Render Mask")
@@ -252,6 +272,12 @@ class ProjectionToolPanel(bpy.types.Panel):
             row.template_list("PROMPT_UL_List", "negative_prompts",
                             material.prompts, "negative_prompts",
                             material.prompts, "negative_prompt_index")
+            
+            box.label(text="Generated Masks:")
+            row = box.row()
+            row.template_list("MASK_UL_List", "mask_list", 
+                            material.masks, "masks",
+                            material.masks, "mask_index")
 
 # Registration
 classes = (
@@ -259,10 +285,13 @@ classes = (
     CameraProperties,
     MaterialIDCameraList,
     MaterialIDPrompts,
+    MaskProperties,
+    MaterialIDMasks,
     MaterialIDProperties,
     CAMERA_UL_List,
     MATERIAL_UL_List,
     PROMPT_UL_List,
+    MASK_UL_List,
     ProjectionToolPanel,
 )
 
@@ -275,6 +304,40 @@ def update_material_selection(self, context):
             material_empty.hide_viewport = (idx != context.scene.material_id_index)
             for child in material_empty.children:
                 child.hide_viewport = (idx != context.scene.material_id_index)
+        
+        # Update material visibility and texture
+        obj = bpy.data.objects.get(context.scene.projection_3d_object)
+        if obj and material.material:
+            if idx == context.scene.material_id_index:
+                # Update material nodes based on current material settings
+                nodes = material.material.node_tree.nodes
+                links = material.material.node_tree.links
+                
+                # Clear existing nodes
+                nodes.clear()
+                
+                # Create basic nodes
+                output = nodes.new('ShaderNodeOutputMaterial')
+                bsdf = nodes.new('ShaderNodeBsdfPrincipled')
+                
+                if material.use_texture and material.texture_path:
+                    # Add texture node
+                    tex_image = nodes.new('ShaderNodeTexImage')
+                    try:
+                        img = bpy.data.images.load(material.texture_path)
+                        tex_image.image = img
+                        links.new(tex_image.outputs['Color'], bsdf.inputs['Base Color'])
+                    except Exception as e:
+                        print(f"Failed to load texture: {str(e)}")
+                else:
+                    # Use solid color
+                    bsdf.inputs['Base Color'].default_value = material.color + (1.0,)
+                
+                links.new(bsdf.outputs['BSDF'], output.inputs['Surface'])
+                
+                # Ensure material is assigned to object
+                if material.material.name not in obj.data.materials:
+                    obj.data.materials.append(material.material)
 
 def register():
     mask_operators.register()
