@@ -167,6 +167,22 @@ class OBJECT_OT_AddCamera(Operator):
         camera_data = bpy.data.cameras.new(name="Camera")
         camera = bpy.data.objects.new(name="Camera", object_data=camera_data)
         
+        # Get or create material collection
+        material_coll_name = f"MaterialID_{material.name}_Collection"
+        if material_coll_name not in bpy.data.collections:
+            material_collection = bpy.data.collections.new(material_coll_name)
+            context.scene.collection.children.link(material_collection)
+        else:
+            material_collection = bpy.data.collections[material_coll_name]
+        
+        # Add camera to the material's collection (only once)
+        material_collection.objects.link(camera)
+        
+        # Set visibility based on active material
+        camera.hide_viewport = (context.scene.material_id_index != self.material_index)
+        camera.hide_render = (context.scene.material_id_index != self.material_index)
+        camera.hide_select = (context.scene.material_id_index != self.material_index)
+        
         # Get the current viewport's view matrix and perspective settings
         for area in context.screen.areas:
             if area.type == 'VIEW_3D':
@@ -183,7 +199,6 @@ class OBJECT_OT_AddCamera(Operator):
                     
                     # Set default camera settings
                     camera.data.lens = 50  # Standard 50mm focal length
-                    # Use scene clipping values instead of view properties
                     camera.data.clip_start = 0.1  # Default near clip
                     camera.data.clip_end = 1000.0  # Default far clip
                     
@@ -200,15 +215,8 @@ class OBJECT_OT_AddCamera(Operator):
         cam_item.name = camera.name
         cam_item.active = True
         
-        # Create or get material ID empty and its collection
+        # Create or get material ID empty
         material_empty_name = f"MaterialID_{material.name}"
-        material_coll_name = f"MaterialID_{material.name}_Collection"
-        
-        if material_coll_name not in bpy.data.collections:
-            material_collection = bpy.data.collections.new(material_coll_name)
-            context.scene.collection.children.link(material_collection)
-        else:
-            material_collection = bpy.data.collections[material_coll_name]
         
         if material_empty_name not in bpy.data.objects:
             material_empty = bpy.data.objects.new(material_empty_name, None)
@@ -217,9 +225,6 @@ class OBJECT_OT_AddCamera(Operator):
             material_collection.objects.link(material_empty)
         else:
             material_empty = bpy.data.objects[material_empty_name]
-        
-        # Add camera to the material collection only
-        material_collection.objects.link(camera)
         
         # Parent camera to material ID empty
         camera.parent = material_empty
@@ -259,6 +264,77 @@ class OBJECT_OT_AddPromptBase(Operator):
     
     material_index: IntProperty()
     is_positive: BoolProperty()
+
+    def execute(self, context):
+        material = context.scene.material_ids[self.material_index]
+        
+        # Create or get collection for this specific material ID
+        collection_name = f"MaterialID_{material.name}_Collection"
+        if collection_name not in bpy.data.collections:
+            collection = bpy.data.collections.new(collection_name)
+            # Create a new collection and link it to the scene
+            bpy.context.scene.collection.children.link(collection)
+        else:
+            collection = bpy.data.collections[collection_name]
+
+        # Create icosphere
+        bpy.ops.mesh.primitive_ico_sphere_add(radius=0.1)
+        point = context.active_object
+        
+        # Set point name with material ID prefix to ensure uniqueness
+        prefix = '+' if self.is_positive else '-'
+        point.name = f"{prefix}Point_{material.name}_{len(collection.objects)}"
+        
+        # Unlink from all current collections first
+        for coll in point.users_collection:
+            coll.objects.unlink(point)
+        
+        # Link only to this material's collection
+        collection.objects.link(point)
+        
+        # Set point color
+        material_name = f"PointMaterial_{prefix}{material.name}"
+        if material_name in bpy.data.materials:
+            mat = bpy.data.materials[material_name]
+        else:
+            mat = bpy.data.materials.new(name=material_name)
+            mat.use_nodes = True
+            mat.node_tree.nodes["Principled BSDF"].inputs[0].default_value = (
+                (0, 1, 0, 1) if self.is_positive else (1, 0, 0, 1)
+            )
+        
+        if point.data.materials:
+            point.data.materials[0] = mat
+        else:
+            point.data.materials.append(mat)
+
+        # Add to appropriate prompt list
+        prompt = (material.prompts.positive_prompts if self.is_positive 
+                 else material.prompts.negative_prompts).add()
+        prompt.name = point.name
+        
+        # Hide all points from other material IDs
+        self.update_point_visibility(context)
+        
+        return {'FINISHED'}
+    
+    def update_point_visibility(self, context):
+        """Update visibility of points based on active material ID"""
+        # Hide all point collections first
+        for idx, material in enumerate(context.scene.material_ids):
+            collection_name = f"MaterialID_{material.name}_Collection"
+            if collection_name in bpy.data.collections:
+                collection = bpy.data.collections[collection_name]
+                # Set visibility based on whether this is the active material
+                is_active = (idx == self.material_index)
+                collection.hide_viewport = not is_active
+                collection.hide_render = not is_active
+                
+                # Update visibility for all objects in collection
+                for obj in collection.objects:
+                    obj.hide_viewport = not is_active
+                    obj.hide_render = not is_active
+                    obj.hide_select = not is_active
     
     def create_icosphere(self, context, location, color, prompt_name):
         # Create mesh and object
@@ -328,9 +404,17 @@ class OBJECT_OT_AddPromptBase(Operator):
             
             if success:
                 material = context.scene.material_ids[self.material_index]
-                prompts = material.prompts.positive_prompts if self.is_positive else material.prompts.negative_prompts
+            
+                # Get or create material collection
+                material_coll_name = f"MaterialID_{material.name}_Collection"
+                if material_coll_name not in bpy.data.collections:
+                    material_collection = bpy.data.collections.new(material_coll_name)
+                    context.scene.collection.children.link(material_collection)
+                else:
+                    material_collection = bpy.data.collections[material_coll_name]
                 
                 # Create prompt and set name
+                prompts = material.prompts.positive_prompts if self.is_positive else material.prompts.negative_prompts
                 prompt = prompts.add()
                 prompt_name = f"{'+'if self.is_positive else '-'}Point{len(prompts)}"
                 prompt.name = prompt_name
@@ -341,21 +425,21 @@ class OBJECT_OT_AddPromptBase(Operator):
                 color = (0.0, 1.0, 0.0) if self.is_positive else (1.0, 0.0, 0.0)
                 ico = self.create_icosphere(context, world_loc, color, prompt_name)
                 
-                # Get or create material ID empty
-                material_empty_name = f"MaterialID_{material.name}"
-                if material_empty_name not in bpy.data.objects:
-                    material_empty = bpy.data.objects.new(material_empty_name, None)
-                    material_empty.empty_display_type = 'CUBE'
-                    material_empty.empty_display_size = 0.1
-                    context.scene.collection.objects.link(material_empty)
-                else:
-                    material_empty = bpy.data.objects[material_empty_name]
+                # Ensure proper collection management
+                # First, unlink from all collections
+                for coll in ico.users_collection:
+                    coll.objects.unlink(ico)
+                    
+                # Then link to the correct material collection
+                material_collection.objects.link(ico)
                 
-                # Parent icosphere to material ID empty
-                ico.parent = material_empty
+                # Set visibility based on active material
+                ico.hide_viewport = False  # Show for active material
+                ico.hide_render = False
+                ico.hide_select = False
                 
-                # Update visibility based on material selection
-                material_empty.hide_viewport = (context.scene.material_id_index != self.material_index)
+                # Update visibility for all other material collections
+                self.update_point_visibility(context)
                 
                 # Apply material or texture to the face
                 self.apply_material_to_face(context, obj, face_idx, material)

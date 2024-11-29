@@ -297,47 +297,52 @@ classes = (
 
 def update_material_selection(self, context):
     """Callback for material selection changes"""
-    for idx, material in enumerate(context.scene.material_ids):
-        material_empty_name = f"MaterialID_{material.name}"
-        if material_empty_name in bpy.data.objects:
-            material_empty = bpy.data.objects[material_empty_name]
-            material_empty.hide_viewport = (idx != context.scene.material_id_index)
-            for child in material_empty.children:
-                child.hide_viewport = (idx != context.scene.material_id_index)
+    active_index = context.scene.material_id_index
+    
+    # First, hide ALL objects in ALL material collections
+    for material in context.scene.material_ids:
+        collection_name = f"MaterialID_{material.name}_Collection"
+        if collection_name in bpy.data.collections:
+            collection = bpy.data.collections[collection_name]
+            
+            # Hide the collection itself
+            collection.hide_viewport = True
+            collection.hide_render = True
+            
+            # Hide all objects in the collection
+            for obj in collection.objects:
+                if obj.type in {'CAMERA', 'MESH'}:  # Cameras and iconospheres (prompt points)
+                    obj.hide_viewport = True
+                    obj.hide_render = True
+                    obj.hide_select = True
+                    if hasattr(obj, "hide_set"):
+                        obj.hide_set(True)
+    
+    # Then, show ONLY the active material's objects
+    if active_index >= 0 and active_index < len(context.scene.material_ids):
+        active_material = context.scene.material_ids[active_index]
+        active_collection_name = f"MaterialID_{active_material.name}_Collection"
         
-        # Update material visibility and texture
-        obj = bpy.data.objects.get(context.scene.projection_3d_object)
-        if obj and material.material:
-            if idx == context.scene.material_id_index:
-                # Update material nodes based on current material settings
-                nodes = material.material.node_tree.nodes
-                links = material.material.node_tree.links
-                
-                # Clear existing nodes
-                nodes.clear()
-                
-                # Create basic nodes
-                output = nodes.new('ShaderNodeOutputMaterial')
-                bsdf = nodes.new('ShaderNodeBsdfPrincipled')
-                
-                if material.use_texture and material.texture_path:
-                    # Add texture node
-                    tex_image = nodes.new('ShaderNodeTexImage')
-                    try:
-                        img = bpy.data.images.load(material.texture_path)
-                        tex_image.image = img
-                        links.new(tex_image.outputs['Color'], bsdf.inputs['Base Color'])
-                    except Exception as e:
-                        print(f"Failed to load texture: {str(e)}")
-                else:
-                    # Use solid color
-                    bsdf.inputs['Base Color'].default_value = material.color + (1.0,)
-                
-                links.new(bsdf.outputs['BSDF'], output.inputs['Surface'])
-                
-                # Ensure material is assigned to object
-                if material.material.name not in obj.data.materials:
-                    obj.data.materials.append(material.material)
+        if active_collection_name in bpy.data.collections:
+            active_collection = bpy.data.collections[active_collection_name]
+            
+            # Show the active collection
+            active_collection.hide_viewport = False
+            active_collection.hide_render = False
+            
+            # Show all objects in the active collection
+            for obj in active_collection.objects:
+                if obj.type in {'CAMERA', 'MESH'}:  # Cameras and iconospheres (prompt points)
+                    obj.hide_viewport = False
+                    obj.hide_render = False
+                    obj.hide_select = False
+                    if hasattr(obj, "hide_set"):
+                        obj.hide_set(False)
+    
+    # Force viewport update
+    for area in context.screen.areas:
+        if area.type == 'VIEW_3D':
+            area.tag_redraw()
 
 def register():
     mask_operators.register()
