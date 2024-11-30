@@ -352,9 +352,18 @@ class OBJECT_OT_AddPromptBase(Operator):
         mat.use_nodes = False
         mat.diffuse_color = color + (1,)  # Add alpha value
         ico.data.materials.append(mat)
-        ico.hide_render = True
-        ico.hide_viewport = False
         
+        # Set visibility properties
+        ico.hide_viewport = False
+        ico.hide_render = True  # Always hide in renders
+        
+        # Set visibility for Cycles/Eevee using current API
+        ico.visible_camera = False
+        ico.visible_diffuse = False
+        ico.visible_glossy = False
+        ico.visible_transmission = False
+        ico.visible_volume_scatter = False
+        ico.visible_shadow = False
         
         # Get or create the material collection
         material = context.scene.material_ids[self.material_index]
@@ -586,58 +595,33 @@ class OBJECT_OT_RenderMask(Operator):
     
     def execute(self, context):
         try:
-        # Check for UV map and material setup
-            obj = bpy.data.objects.get(context.scene.projection_3d_object)
-            if not obj:
-                self.report({'ERROR'}, "No target object selected")
-                return {'CANCELLED'}
-
-            # Check for UV map
-            if not obj.data.uv_layers:
-                self.report({'ERROR'}, "Object needs a UV map for projection")
-                return {'CANCELLED'}
-
-            # Check for material
-            if not obj.material_slots:
-                # Create a new material if none exists
-                mat = bpy.data.materials.new(name=f"{obj.name}_ProjectionMaterial")
-                mat.use_nodes = True
-                obj.data.materials.append(mat)
-
-            # Ensure material has an image texture node
-            mat = obj.active_material
-            if not mat:
-                self.report({'ERROR'}, "No active material")
-                return {'CANCELLED'}
-
-            nodes = mat.node_tree.nodes
-            image_tex = None
-            for node in nodes:
-                if node.type == 'TEX_IMAGE':
-                    image_tex = node
-                    break
-
-            if not image_tex:
-                image_tex = nodes.new('ShaderNodeTexImage')
-                # Connect to principled BSDF if it exists
-                principled = next((n for n in nodes if n.type == 'BSDF_PRINCIPLED'), None)
-                if principled:
-                    mat.node_tree.links.new(image_tex.outputs[0], principled.inputs['Base Color'])
-
-            # Store initial visibility states
+            # Store current mode and active object
+            original_mode = None
+            original_active = context.active_object
+            if original_active:
+                original_mode = original_active.mode
+            
+            # Store original visibility states
             visibility_states = {}
             
-            # Hide all iconospheres before rendering
+            # Hide all prompt points (icospheres) before rendering
             for material in context.scene.material_ids:
-                # Store and hide positive prompts
-                for point in material.prompts.positive_prompts:
-                    if point.name in bpy.data.objects:
-                        obj = bpy.data.objects[point.name]
-                        visibility_states[obj.name] = {
-                            'hide_render': obj.hide_render,
-                            'hide_viewport': obj.hide_viewport
-                        }
-                        obj.hide_render = True
+                collection_name = f"MaterialID_{material.name}_Collection"
+                if collection_name in bpy.data.collections:
+                    collection = bpy.data.collections[collection_name]
+                    for obj in collection.objects:
+                        # Only store and hide icosphere prompts
+                        if obj.name.startswith('+') or obj.name.startswith('-'):
+                            visibility_states[obj.name] = {
+                                'hide_render': obj.hide_render,
+                                'hide_viewport': obj.hide_viewport,
+                                'visible_camera': obj.visible_camera if hasattr(obj, 'visible_camera') else True,
+                            }
+                            obj.hide_render = True
+                            if hasattr(obj, 'visible_camera'):
+                                obj.visible_camera = False
+                            # Hide the collection during render
+                            collection.hide_render = True
                 
                 # Store and hide negative prompts
                 for point in material.prompts.negative_prompts:
@@ -645,9 +629,25 @@ class OBJECT_OT_RenderMask(Operator):
                         obj = bpy.data.objects[point.name]
                         visibility_states[obj.name] = {
                             'hide_render': obj.hide_render,
-                            'hide_viewport': obj.hide_viewport
+                            'hide_viewport': obj.hide_viewport,
+                            'visible_camera': obj.visible_camera if hasattr(obj, 'visible_camera') else True,
                         }
                         obj.hide_render = True
+                        if hasattr(obj, 'visible_camera'):
+                            obj.visible_camera = False
+                        # Hide the collection during render
+                        collection.hide_render = True
+
+            # Get the target object
+            obj = bpy.data.objects.get(context.scene.projection_3d_object)
+            if not obj:
+                self.report({'ERROR'}, "No target object selected")
+                return {'CANCELLED'}
+
+            # Set the target object as active and switch to object mode
+            context.view_layer.objects.active = obj
+            if obj.mode != 'OBJECT':
+                bpy.ops.object.mode_set(mode='OBJECT')
 
             # Continue with the original execute functionality
             try:
@@ -681,23 +681,21 @@ class OBJECT_OT_RenderMask(Operator):
                 pos_points = []
                 neg_points = []
                 
-                # Get positive points (green iconospheres)
+                # Only process points from the current material's prompts
                 for point in material.prompts.positive_prompts:
                     if point.name in bpy.data.objects:
                         obj = bpy.data.objects[point.name]
                         pos_points.append(obj.location)
-                        self.report({'INFO'}, f"Found positive prompt at {obj.location}")
                         
-                # Get negative points (red iconospheres)
                 for point in material.prompts.negative_prompts:
                     if point.name in bpy.data.objects:
                         obj = bpy.data.objects[point.name]
                         neg_points.append(obj.location)
-                        self.report({'INFO'}, f"Found negative prompt at {obj.location}")
 
                 if not pos_points and not neg_points:
-                    self.report({'WARNING'}, f"No prompt points found for material {material.name}, skipping...")
-                    continue
+                    self.report({'WARNING'}, f"No prompt points found for material {material.name}")
+                    return False
+
 
                 # Process each camera for this material
                 for cam_index, cam in enumerate(material.cameras.cameras):
@@ -768,12 +766,20 @@ class OBJECT_OT_RenderMask(Operator):
             return {'CANCELLED'}
         
         finally:
-            # Restore visibility states after rendering
+            # Restore visibility states
             for obj_name, states in visibility_states.items():
                 if obj_name in bpy.data.objects:
                     obj = bpy.data.objects[obj_name]
                     obj.hide_render = states['hide_render']
                     obj.hide_viewport = states['hide_viewport']
+            
+            # Restore original active object and mode
+            if original_active:
+                context.view_layer.objects.active = original_active
+                if original_mode and original_mode != 'OBJECT':
+                    bpy.ops.object.mode_set(mode=original_mode)
+
+        return {'FINISHED'}
         
         
 
