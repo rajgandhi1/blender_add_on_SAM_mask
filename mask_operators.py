@@ -62,7 +62,7 @@ class OBJECT_OT_BakeCombinedMask(Operator):
         # Set baking settings
         bpy.context.scene.cycles.bake_type = 'COMBINED'
         bpy.context.scene.render.engine = 'CYCLES'
-        bpy.context.scene.cycles.samples = 128
+        bpy.context.scene.cycles.samples = 256
 
         # Select the object in the correct context
         for obj_iter in bpy.context.view_layer.objects:
