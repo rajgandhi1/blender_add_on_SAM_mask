@@ -130,6 +130,9 @@ class MaterialIDProperties(PropertyGroup):
     )
     texture_path: StringProperty(
         name="Texture Path",
+        description="Path to texture file",
+        default="",
+        maxlen=1024,
         subtype='FILE_PATH'
     )
     visible: BoolProperty(default=True)
@@ -138,6 +141,7 @@ class MaterialIDProperties(PropertyGroup):
     prompts: PointerProperty(type=MaterialIDPrompts)
 
     masks: PointerProperty(type=MaterialIDMasks)
+    baked_texture: PointerProperty(type=bpy.types.Image)
 
 class MASK_UL_List(UIList):
     def draw_item(self, context, layout, data, item, icon, active_data, active_propname):
@@ -272,12 +276,6 @@ class ProjectionToolPanel(bpy.types.Panel):
             row.template_list("PROMPT_UL_List", "negative_prompts",
                             material.prompts, "negative_prompts",
                             material.prompts, "negative_prompt_index")
-            
-            box.label(text="Generated Masks:")
-            row = box.row()
-            row.template_list("MASK_UL_List", "mask_list", 
-                            material.masks, "masks",
-                            material.masks, "mask_index")
 
 # Registration
 classes = (
@@ -372,6 +370,13 @@ def register():
         default=0,  # Set default to 0
         min=0,  # Ensure it can't go below 0
         update=update_material_selection
+    )
+
+    bpy.types.Scene.bake_resolution = IntProperty(
+        name="Bake Resolution",
+        default=1024,
+        min=64,
+        max=8192
     )
 
 def unregister():
