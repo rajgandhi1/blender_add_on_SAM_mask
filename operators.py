@@ -163,9 +163,12 @@ class OBJECT_OT_AddCamera(Operator):
     def execute(self, context):
         material = context.scene.material_ids[self.material_index]
         
-        # Create new camera
+        # Create new camera with proper naming
         camera_data = bpy.data.cameras.new(name="Camera")
-        camera = bpy.data.objects.new(name="Camera", object_data=camera_data)
+        # Get the next available number for camera naming
+        next_num = len(material.cameras.cameras) + 1
+        camera_name = f"Camera_{next_num:03d}"  # This will create Camera_001, Camera_002, etc.
+        camera = bpy.data.objects.new(name=camera_name, object_data=camera_data)
         
         # Get or create material collection
         material_coll_name = f"MaterialID_{material.name}_Collection"
