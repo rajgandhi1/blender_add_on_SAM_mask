@@ -71,6 +71,9 @@ class OBJECT_OT_AddMaterialID(Operator):
         output = nodes.new('ShaderNodeOutputMaterial')
         principled = nodes.new('ShaderNodeBsdfPrincipled')
         
+        # Set color from material_id.color
+        principled.inputs[0].default_value = (*material_id.color, 1.0)
+        
         # Link nodes
         mat.node_tree.links.new(principled.outputs[0], output.inputs[0])
         
@@ -541,28 +544,11 @@ class OBJECT_OT_AddPromptBase(Operator):
         output.location = (300, 0)
         principled.location = (0, 0)
         
+        # Set color
+        principled.inputs[0].default_value = tuple(material_id.color) + (1.0,)
+        
         # Link shader to output
         links.new(principled.outputs[0], output.inputs[0])
-        
-        if material_id.use_texture and material_id.texture_path:
-            # Create and setup texture node
-            tex_image = nodes.new('ShaderNodeTexImage')
-            tex_image.location = (-300, 0)
-            
-            # Load texture image
-            if os.path.exists(bpy.path.abspath(material_id.texture_path)):
-                try:
-                    img = bpy.data.images.load(bpy.path.abspath(material_id.texture_path))
-                    tex_image.image = img
-                except:
-                    self.report({'WARNING'}, f"Could not load texture: {material_id.texture_path}")
-            
-            # Link texture to shader
-            links.new(tex_image.outputs[0], principled.inputs[0])  # Base Color
-        else:
-            # Convert color to tuple and add alpha
-            color = tuple(material_id.color) + (1.0,)
-            principled.inputs[0].default_value = color
 
 class OBJECT_OT_AddPositivePoint(OBJECT_OT_AddPromptBase):
     bl_idname = "wm.add_positive_point"

@@ -61,47 +61,6 @@ def update_material_name(self, context):
     # Store the current name for future reference
     self['previous_name'] = self.name
 
-def update_use_texture(self, context):
-    """Callback for texture toggle"""
-    obj = bpy.data.objects.get(context.scene.projection_3d_object)
-    if not obj:
-        return
-        
-    # Create or get material
-    mat_name = f"{obj.name}_material"
-    mat = bpy.data.materials.get(mat_name)
-    if not mat:
-        mat = bpy.data.materials.new(name=mat_name)
-    
-    mat.use_nodes = True
-    nodes = mat.node_tree.nodes
-    links = mat.node_tree.links
-    
-    # Clear existing nodes
-    nodes.clear()
-    
-    # Create basic nodes
-    output = nodes.new('ShaderNodeOutputMaterial')
-    bsdf = nodes.new('ShaderNodeBsdfPrincipled')
-    
-    if self.use_texture and context.scene.projection_texture_map:
-        # Load and apply texture
-        tex_image = nodes.new('ShaderNodeTexImage')
-        try:
-            img = bpy.data.images.load(context.scene.projection_texture_map)
-            tex_image.image = img
-            links.new(tex_image.outputs['Color'], bsdf.inputs['Base Color'])
-        except Exception as e:
-            print(f"Failed to load texture: {str(e)}")
-    
-    links.new(bsdf.outputs['BSDF'], output.inputs['Surface'])
-    
-    # Assign material to object
-    if obj.data.materials:
-        obj.data.materials[0] = mat
-    else:
-        obj.data.materials.append(mat)
-
 class MaskProperties(PropertyGroup):
     name: StringProperty(default="Mask")
     material: PointerProperty(type=bpy.types.Material)
@@ -115,12 +74,6 @@ class MaterialIDProperties(PropertyGroup):
     name: StringProperty(
         default="Material",
         update=update_material_name
-    )
-    use_texture: BoolProperty(
-        name="Use Texture",
-        description="Use texture instead of solid color",
-        default=False,
-        update=update_use_texture
     )
     color: FloatVectorProperty(
         subtype='COLOR',
@@ -139,7 +92,6 @@ class MaterialIDProperties(PropertyGroup):
     material: PointerProperty(type=bpy.types.Material)
     cameras: PointerProperty(type=MaterialIDCameraList)
     prompts: PointerProperty(type=MaterialIDPrompts)
-
     masks: PointerProperty(type=MaterialIDMasks)
     baked_texture: PointerProperty(type=bpy.types.Image)
 
@@ -159,11 +111,7 @@ class MATERIAL_UL_List(UIList):
     def draw_item(self, context, layout, data, item, icon, active_data, active_propname):
         if self.layout_type in {'DEFAULT', 'COMPACT'}:
             layout.prop(item, "name", text="", emboss=False)
-            if item.use_texture:
-                icon = 'TEXTURE'
-            else:
-                icon = 'COLOR'
-            layout.prop(item, "visible", text="", icon=icon)
+            layout.prop(item, "visible", text="", icon='COLOR')
 
 class PROMPT_UL_List(UIList):
     def draw_item(self, context, layout, data, item, icon, active_data, active_propname):
@@ -237,9 +185,6 @@ class ProjectionToolPanel(bpy.types.Panel):
             row = box.row()
             row.prop(material, "name", text="Name")
             row.prop(material, "visible", text="Visible")
-            
-            row = box.row()
-            row.prop(material, "use_texture", text="Use Texture")
             
             box.prop(material, "color", text="Color")
             
